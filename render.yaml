@@ -1,11 +1,12 @@
 services:
+
   # ========================================
-  # 2. 자동 크롤러 (1시간마다 실행)
+  # 2. 자동 크롤러 (5분마다 실행)
   # ========================================
   - type: cron
-    name: rexa-crawler-hourly
+    name: rexa-crawler-5min
     runtime: python
-    schedule: "0 * * * *"  # 매시 0분에 실행 (예: 09:00, 10:00, 11:00...)
+    schedule: "*/5 * * * *"  # 5분마다 실행 (예: 09:00, 09:05, 09:10...)
     buildCommand: pip install -r requirements.txt
     startCommand: python crawler.py
     envVars:
