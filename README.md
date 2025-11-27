@@ -1,4 +1,4 @@
-# rexa-crawler-hourly
+# rexa-crawler-5min
 
 <img width="3294" height="900" alt="스크린샷 2025-08-10 오후 10 36 30" src="https://github.com/user-attachments/assets/b6a75e85-1d61-40b1-9045-9239bfe46f7e" />
 
