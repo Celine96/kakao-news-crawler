@@ -11,6 +11,7 @@ import os
 import json
 from datetime import datetime
 from openai import OpenAI
+from difflib import SequenceMatcher
 
 # 공통 함수 임포트
 from common import (
@@ -141,6 +142,76 @@ JSON 형식으로 응답:
                 return description[:250].strip() + '...'
         return description
 
+def calculate_title_similarity(title1: str, title2: str) -> float:
+    """
+    두 제목 간의 유사도 계산 (0.0 ~ 1.0)
+    
+    Args:
+        title1: 첫 번째 제목
+        title2: 두 번째 제목
+    
+    Returns:
+        유사도 (0.0 = 완전 다름, 1.0 = 완전 같음)
+    """
+    # 소문자 변환 및 공백 정리
+    t1 = title1.lower().strip()
+    t2 = title2.lower().strip()
+    
+    # SequenceMatcher로 유사도 계산
+    similarity = SequenceMatcher(None, t1, t2).ratio()
+    
+    return similarity
+
+def remove_duplicate_news(news_items: list, similarity_threshold: float = 0.75) -> list:
+    """
+    제목 유사도 기반으로 중복 뉴스 제거
+    
+    Args:
+        news_items: 뉴스 아이템 리스트
+        similarity_threshold: 중복 판단 임계값 (0.75 = 75% 이상 유사하면 중복)
+    
+    Returns:
+        중복이 제거된 뉴스 리스트
+    """
+    if not news_items:
+        return []
+    
+    # 점수 높은 순으로 정렬
+    sorted_items = sorted(
+        news_items, 
+        key=lambda x: x.get('relevance_score', 0), 
+        reverse=True
+    )
+    
+    unique_news = []
+    removed_count = 0
+    
+    for item in sorted_items:
+        is_duplicate = False
+        
+        # 이미 선택된 뉴스들과 비교
+        for selected in unique_news:
+            similarity = calculate_title_similarity(
+                item['title'], 
+                selected['title']
+            )
+            
+            if similarity >= similarity_threshold:
+                is_duplicate = True
+                removed_count += 1
+                logger.info(
+                    f"   ⚠️ 중복 제거: '{item['title'][:40]}...' "
+                    f"(유사도: {similarity:.0%} with '{selected['title'][:30]}...')"
+                )
+                break
+        
+        if not is_duplicate:
+            unique_news.append(item)
+    
+    logger.info(f"✅ 중복 제거 완료: {len(sorted_items)}개 → {len(unique_news)}개 (중복 {removed_count}개 제거)")
+    
+    return unique_news
+
 # ================================================================================
 # 메인 크롤링 함수
 # ================================================================================
@@ -205,14 +276,26 @@ async def auto_crawl():
             item['description'] = summary
             logger.info(f"   [{idx+1}/{len(news_items)}] 요약 완료: {item['title'][:40]}...")
         
-        # 4. 백그라운드 저장
+        # 4. 중복 뉴스 제거 (제목 유사도 기반)
+        logger.info("")
+        logger.info("🔍 중복 뉴스 확인 중...")
+        original_count = len(news_items)
+        news_items = remove_duplicate_news(news_items, similarity_threshold=0.75)
+        
+        # 중복 제거 후 통계 업데이트
+        if len(news_items) < original_count:
+            logger.info(f"   📊 중복 제거: {original_count}개 → {len(news_items)}개")
+        else:
+            logger.info(f"   ✅ 중복 없음: {len(news_items)}개 유지")
+        
+        # 5. 백그라운드 저장
         logger.info("")
         logger.info("💾 구글 시트/CSV 저장 중...")
         await save_all_news_background(news_items, user_id="auto_crawler")
         
         stats.total_saved = len(news_items)
         
-        # 5. 완료
+        # 6. 완료
         stats.end_time = datetime.now()
         logger.info("")
         logger.info("🎉 크롤링 완료!")
