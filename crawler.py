@@ -1,13 +1,16 @@
 """
 REXA 자동 뉴스 크롤러
-- 1시간마다 실행 (Cron Job)
+- 5분분마다 실행 (Cron Job)
 - 부동산 뉴스 20개 수집 → 필터링 → 저장
 """
 
 import asyncio
 import logging
 import sys
+import os
+import json
 from datetime import datetime
+from openai import OpenAI
 
 # 공통 함수 임포트
 from common import (
@@ -54,6 +57,89 @@ class CrawlStats:
                 filter_rate = (self.total_filtered / self.total_fetched) * 100
                 logger.info(f"   📈 필터링율: {filter_rate:.1f}%")
             logger.info("=" * 70)
+
+# ================================================================================
+# 뉴스 요약 함수 (크롤러 전용)
+# ================================================================================
+
+def generate_news_summary(title: str, description: str) -> str:
+    """
+    GPT를 사용해서 뉴스를 3-4문장으로 요약 (크롤러 전용)
+    
+    Args:
+        title: 뉴스 제목
+        description: 네이버 API에서 받은 description
+    
+    Returns:
+        3-4문장의 충실한 요약 (200-250자)
+    """
+    
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    
+    if not OPENAI_API_KEY:
+        # GPT 사용 불가 시 문장 단위로 자르기
+        if len(description) > 250:
+            sentences = description.split('.')
+            if len(sentences) >= 3:
+                return sentences[0] + '.' + sentences[1] + '.' + sentences[2] + '.'
+            else:
+                return description[:250].strip() + '...'
+        return description
+    
+    system_prompt = """당신은 뉴스 요약 전문가입니다.
+주어진 뉴스 제목과 설명을 읽고, 핵심 내용을 3-4문장으로 충실하게 요약하세요.
+
+요약 규칙:
+- 3-4문장으로 작성 (200-250자)
+- 구체적인 정보를 반드시 포함 (수치, 날짜, 지역, 주체 등)
+- 단순히 "~했다"가 아니라 "누가, 무엇을, 왜, 어떻게"를 포함
+- 뉴스의 맥락과 배경까지 간략히 설명
+- 자연스러운 한국어 문장
+
+예시:
+입력: "서울 강남구 재건축 아파트 가격 급등...규제 완화 영향"
+출력: "서울 강남구 재건축 아파트 가격이 전월 대비 5% 상승했다. 정부의 재건축 규제 완화와 금리 인하 기대감이 주요 원인으로 작용했다. 특히 대치동과 압구정동 일대 단지들이 강세를 보였다. 전문가들은 이러한 상승세가 당분간 지속될 것으로 전망했다."
+
+JSON 형식으로 응답:
+{"summary": "요약 내용"}"""
+
+    user_prompt = f"""제목: {title}
+설명: {description}
+
+위 뉴스를 3-4문장으로 충실하게 요약하세요. 구체적인 정보(수치, 지역, 날짜 등)를 반드시 포함하세요."""
+
+    try:
+        openai_client = OpenAI(api_key=OPENAI_API_KEY)
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.3,
+            response_format={"type": "json_object"},
+            timeout=15
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        summary = result.get('summary', description[:250])
+        
+        # 요약이 너무 길면 자르기
+        if len(summary) > 280:
+            summary = summary[:277] + '...'
+        
+        return summary
+        
+    except Exception as e:
+        logger.warning(f"⚠️ GPT 요약 실패: {e} - 원본 사용")
+        # 실패 시 문장 단위로 자르기
+        if len(description) > 250:
+            sentences = description.split('.')
+            if len(sentences) >= 3:
+                return sentences[0] + '.' + sentences[1] + '.' + sentences[2] + '.'
+            else:
+                return description[:250].strip() + '...'
+        return description
 
 # ================================================================================
 # 메인 크롤링 함수
@@ -110,14 +196,23 @@ async def auto_crawl():
                        f"지역: {item.get('region', 'N/A')} | "
                        f"키워드: {', '.join(item.get('keywords', [])[:3])}")
         
-        # 3. 백그라운드 저장
+        # 3. 뉴스 요약 생성 (크롤러 전용)
+        logger.info("")
+        logger.info("📝 뉴스 요약 생성 중...")
+        for idx, item in enumerate(news_items):
+            original_desc = item['description']
+            summary = generate_news_summary(item['title'], original_desc)
+            item['description'] = summary
+            logger.info(f"   [{idx+1}/{len(news_items)}] 요약 완료: {item['title'][:40]}...")
+        
+        # 4. 백그라운드 저장
         logger.info("")
         logger.info("💾 구글 시트/CSV 저장 중...")
         await save_all_news_background(news_items, user_id="auto_crawler")
         
         stats.total_saved = len(news_items)
         
-        # 4. 완료
+        # 5. 완료
         stats.end_time = datetime.now()
         logger.info("")
         logger.info("🎉 크롤링 완료!")
