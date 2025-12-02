@@ -53,84 +53,6 @@ logger = logging.getLogger(__name__)
 # 뉴스 필터링 시스템
 # ================================================================================
 
-def generate_news_summary(title: str, description: str) -> str:
-    """
-    GPT를 사용해서 뉴스를 1-2문장으로 요약
-    
-    Args:
-        title: 뉴스 제목
-        description: 네이버 API에서 받은 description (일부 잘린 본문)
-    
-    Returns:
-        1-2문장의 간결한 요약
-    """
-    
-    if not OPENAI_API_KEY:
-        # GPT 사용 불가 시 description을 문장 단위로 자르기
-        if len(description) > 150:
-            # 마침표 기준으로 첫 1-2문장만 추출
-            sentences = description.split('.')
-            if len(sentences) >= 2:
-                return sentences[0] + '.' + sentences[1] + '.'
-            else:
-                return description[:150].strip() + '...'
-        return description
-    
-    system_prompt = """당신은 뉴스 요약 전문가입니다.
-주어진 뉴스 제목과 설명을 읽고, 핵심 내용을 1-2문장으로 간결하게 요약하세요.
-
-요약 규칙:
-- 1-2문장으로 작성 (최대 100자)
-- 핵심 사실만 포함 (누가, 무엇을, 어떻게)
-- 구체적인 수치가 있으면 포함
-- 자연스러운 한국어 문장
-- 불필요한 수식어 제거
-
-예시:
-입력: "아파트 가격 상승...서울 강남구 재건축 단지 급등"
-출력: "서울 강남구 재건축 아파트 가격이 급등했다."
-
-JSON 형식으로 응답:
-{"summary": "요약 내용"}"""
-
-    user_prompt = f"""제목: {title}
-설명: {description}
-
-위 뉴스를 1-2문장으로 요약하세요."""
-
-    try:
-        openai_client_summary = OpenAI(api_key=OPENAI_API_KEY)
-        response = openai_client_summary.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.3,
-            response_format={"type": "json_object"},
-            timeout=10
-        )
-        
-        result = json.loads(response.choices[0].message.content)
-        summary = result.get('summary', description[:150])
-        
-        # 요약이 너무 길면 자르기
-        if len(summary) > 150:
-            summary = summary[:147] + '...'
-        
-        return summary
-        
-    except Exception as e:
-        logging.warning(f"⚠️ GPT 요약 실패: {e} - 원본 사용")
-        # 실패 시 문장 단위로 자르기
-        if len(description) > 150:
-            sentences = description.split('.')
-            if len(sentences) >= 2:
-                return sentences[0] + '.' + sentences[1] + '.'
-            else:
-                return description[:150].strip() + '...'
-        return description
-
 def filter_real_estate_news(title: str, description: str) -> dict:
     """
     기사가 부동산과 관련이 있는지 GPT로 판단하고 핵심 지표 추출
@@ -337,12 +259,18 @@ def search_naver_news(query: str = "부동산", display: int = 10) -> Optional[l
             title = html.unescape(title)
             description = html.unescape(description)
             
-            # GPT로 1-2문장 요약 생성
-            summary = generate_news_summary(title, description)
+            # 요약 길이 제한 (200자)
+            if len(description) > 200:
+                cut_pos = 200
+                for i in range(200, max(0, len(description) - 100), -1):
+                    if description[i] in '.!?':
+                        cut_pos = i + 1
+                        break
+                description = description[:cut_pos].strip()
             
             processed_items.append({
                 "title": title,
-                "description": summary,
+                "description": description,
                 "link": item['link'],
                 "pubDate": item['pubDate'],
                 "timestamp": datetime.now().isoformat()
@@ -480,6 +408,59 @@ def init_google_sheets():
     except Exception as e:
         logger.error(f"❌ Failed to initialize Google Sheets: {e}")
         return False
+
+def get_recent_urls_from_gsheet(hours: int = 3) -> set:
+    """
+    구글 시트에서 최근 N시간 내 저장된 URL 목록 가져오기
+    
+    Args:
+        hours: 몇 시간 이내 데이터를 확인할지 (기본 3시간)
+    
+    Returns:
+        최근 N시간 내 URL 집합
+    """
+    global gsheet_worksheet
+    
+    if not gsheet_worksheet:
+        logger.warning("⚠️ Google Sheets not initialized - 중복 체크 불가")
+        return set()
+    
+    try:
+        from datetime import datetime, timedelta
+        
+        # 현재 시간 - N시간
+        cutoff_time = datetime.now() - timedelta(hours=hours)
+        
+        # 전체 레코드 가져오기
+        all_records = gsheet_worksheet.get_all_records()
+        
+        recent_urls = set()
+        
+        for record in all_records:
+            try:
+                # timestamp 파싱 (ISO format)
+                timestamp_str = record.get('timestamp', '')
+                if not timestamp_str:
+                    continue
+                
+                # ISO format 파싱
+                record_time = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                
+                # 최근 N시간 이내면 URL 추가
+                if record_time >= cutoff_time:
+                    url = record.get('url', '')
+                    if url:
+                        recent_urls.add(url)
+            except Exception as e:
+                # 개별 레코드 파싱 실패는 무시
+                continue
+        
+        logger.info(f"📋 최근 {hours}시간 URL 확인: {len(recent_urls)}개")
+        return recent_urls
+        
+    except Exception as e:
+        logger.error(f"❌ 최근 URL 조회 실패: {e}")
+        return set()
 
 def init_csv_file():
     """Initialize CSV file with headers"""
