@@ -18,7 +18,8 @@ from common import (
     search_naver_news,
     save_all_news_background,
     init_google_sheets,
-    init_csv_file
+    init_csv_file,
+    get_recent_urls_from_gsheet
 )
 
 # ================================================================================
@@ -278,7 +279,7 @@ async def auto_crawl():
         
         # 4. 중복 뉴스 제거 (제목 유사도 기반)
         logger.info("")
-        logger.info("🔍 중복 뉴스 확인 중...")
+        logger.info("🔍 중복 뉴스 확인 중 (제목 유사도)...")
         original_count = len(news_items)
         news_items = remove_duplicate_news(news_items, similarity_threshold=0.75)
         
@@ -288,14 +289,47 @@ async def auto_crawl():
         else:
             logger.info(f"   ✅ 중복 없음: {len(news_items)}개 유지")
         
-        # 5. 백그라운드 저장
+        # 5. DB 중복 체크 (최근 3시간 URL 확인)
+        logger.info("")
+        logger.info("🔍 DB 중복 확인 중 (최근 3시간)...")
+        recent_urls = get_recent_urls_from_gsheet(hours=3)
+        
+        before_db_check = len(news_items)
+        new_news_items = []
+        duplicate_count = 0
+        
+        for item in news_items:
+            url = item.get('link') or item.get('url', '')
+            if url and url in recent_urls:
+                duplicate_count += 1
+                logger.info(f"   ⚠️ DB 중복: '{item['title'][:40]}...' (이미 저장됨)")
+            else:
+                new_news_items.append(item)
+        
+        news_items = new_news_items
+        
+        if duplicate_count > 0:
+            logger.info(f"   📊 DB 중복 제거: {before_db_check}개 → {len(news_items)}개 (중복 {duplicate_count}개)")
+        else:
+            logger.info(f"   ✅ DB 중복 없음: {len(news_items)}개 모두 신규")
+        
+        # 저장할 뉴스가 없으면 종료
+        if len(news_items) == 0:
+            logger.warning("")
+            logger.warning("⚠️ 저장할 신규 뉴스 없음")
+            logger.warning("   원인: 모두 최근 3시간 내 저장된 뉴스")
+            stats.end_time = datetime.now()
+            stats.print_summary()
+            return
+        
+        # 6. 백그라운드 저장
         logger.info("")
         logger.info("💾 구글 시트/CSV 저장 중...")
         await save_all_news_background(news_items, user_id="auto_crawler")
         
         stats.total_saved = len(news_items)
         
-        # 6. 완료
+        # 7. 완료
         stats.end_time = datetime.now()
         logger.info("")
         logger.info("🎉 크롤링 완료!")
