@@ -53,6 +53,118 @@ logger = logging.getLogger(__name__)
 # 뉴스 필터링 시스템
 # ================================================================================
 
+def is_headline_news(title: str, description: str) -> bool:
+    """
+    헤드라인/종합 뉴스인지 판단
+    
+    Returns:
+        True: 헤드라인 뉴스 (제외 대상)
+        False: 일반 뉴스
+    """
+    text = (title + " " + description).lower()
+    
+    # 헤드라인 패턴 키워드
+    headline_keywords = [
+        "오늘의 부동산 뉴스",
+        "오늘의 뉴스",
+        "부동산 뉴스 총정리",
+        "헤드라인",
+        "뉴스 브리핑",
+        "뉴스 모음",
+        "주요 뉴스",
+        "뉴스 정리",
+    ]
+    
+    for keyword in headline_keywords:
+        if keyword in text:
+            return True
+    
+    # 패턴 매칭: "뉴스 (총 N건)", "총 N건의 뉴스" 등
+    patterns = [
+        r'뉴스\s*\(총\s*\d+건\)',  # 뉴스 (총 5건)
+        r'총\s*\d+건',             # 총 5건
+        r'\d+건의?\s*뉴스',        # 5건의 뉴스
+    ]
+    
+    for pattern in patterns:
+        if re.search(pattern, text):
+            return True
+    
+    return False
+
+
+def check_celebrity_scandal(title: str, description: str) -> dict:
+    """
+    연예인 관련 뉴스의 부동산 관련성 판단
+    
+    Returns:
+        {
+            'is_celebrity_news': bool,
+            'should_exclude': bool,  # True면 제외
+            'reason': str
+        }
+    """
+    text = (title + " " + description).lower()
+    
+    # 연예인 키워드
+    celebrity_keywords = [
+        "배우", "가수", "연예인", "아이돌", "탤런트",
+        "스타", "셀럽", "방송인", "코미디언", "개그맨"
+    ]
+    
+    # 부동산 거래 키워드 (포함 OK)
+    transaction_keywords = [
+        "매매", "매입", "구입", "구매", "취득", "샀다", "사들",
+        "매도", "판매", "처분", "팔았다", "팔아",
+        "억원에", "억대", "억원대",
+        "투자", "분양", "입주",
+        "새집", "이사"
+    ]
+    
+    # 분쟁/스캔들 키워드 (제외)
+    scandal_keywords = [
+        "분쟁", "갈등", "소송", "고소", "고발",
+        "혐의", "의혹", "논란", "폭로", "고발",
+        "사기", "횡령", "배임",
+        "전 남편", "전 부인", "이혼", "위자료"
+    ]
+    
+    is_celebrity = any(kw in text for kw in celebrity_keywords)
+    has_transaction = any(kw in text for kw in transaction_keywords)
+    has_scandal = any(kw in text for kw in scandal_keywords)
+    
+    # 연예인 뉴스가 아니면 패스
+    if not is_celebrity:
+        return {
+            'is_celebrity_news': False,
+            'should_exclude': False,
+            'reason': '연예인 뉴스 아님'
+        }
+    
+    # 연예인 + 분쟁/스캔들 = 제외
+    if has_scandal:
+        return {
+            'is_celebrity_news': True,
+            'should_exclude': True,
+            'reason': '연예인 분쟁/스캔들 (부동산 거래 무관)'
+        }
+    
+    # 연예인 + 거래 키워드 = 포함
+    if has_transaction:
+        return {
+            'is_celebrity_news': True,
+            'should_exclude': False,
+            'reason': '연예인 부동산 매수/매도 (포함)'
+        }
+    
+    # 애매한 경우 - GPT가 판단하도록 넘김
+    return {
+        'is_celebrity_news': True,
+        'should_exclude': False,
+        'reason': '연예인 관련이지만 추가 판단 필요'
+    }
+
+
 def filter_real_estate_news(title: str, description: str) -> dict:
     """
     기사가 부동산과 관련이 있는지 GPT로 판단하고 핵심 지표 추출
@@ -69,6 +181,40 @@ def filter_real_estate_news(title: str, description: str) -> dict:
         }
     """
     
+    # ============================================================
+    # 1단계: 헤드라인 뉴스 사전 필터링
+    # ============================================================
+    if is_headline_news(title, description):
+        logging.info(f"❌ [헤드라인 제외] {title[:50]}...")
+        return {
+            'is_relevant': False,
+            'relevance_score': 0,
+            'keywords': [],
+            'region': None,
+            'has_price': False,
+            'has_policy': False,
+            'reason': '헤드라인/종합 뉴스'
+        }
+    
+    # ============================================================
+    # 2단계: 연예인 분쟁 뉴스 필터링
+    # ============================================================
+    celebrity_check = check_celebrity_scandal(title, description)
+    if celebrity_check['should_exclude']:
+        logging.info(f"❌ [연예인 분쟁 제외] {title[:50]}... ({celebrity_check['reason']})")
+        return {
+            'is_relevant': False,
+            'relevance_score': 0,
+            'keywords': [],
+            'region': None,
+            'has_price': False,
+            'has_policy': False,
+            'reason': celebrity_check['reason']
+        }
+    
+    # ============================================================
+    # 3단계: GPT 필터링 (기존 로직)
+    # ============================================================
     if not OPENAI_API_KEY:
         logging.warning("⚠️ OPENAI_API_KEY not set - using keyword filtering")
         return filter_by_keywords(title, description)
@@ -83,8 +229,11 @@ def filter_real_estate_news(title: str, description: str) -> dict:
 - 부동산 정책, 세금, 대출, 금리
 - 재건축, 재개발, 분양, 청약
 - 부동산 투자, 수익형 부동산
+- **연예인의 부동산 매수/매도/투자 (OK)**
 
 ❌ 부동산 무관 기사:
+- **헤드라인 뉴스, 종합 뉴스 (여러 기사를 모은 것)**
+- **연예인 분쟁/스캔들 (부동산 거래와 무관한 소송, 갈등)**
 - 주식, 채권, 코인 등 금융상품
 - 일반 경제 뉴스 (부동산 언급 없음)
 - 정치, 사회, 문화 이슈
@@ -200,6 +349,14 @@ def filter_news_batch(news_items: list) -> list:
     """여러 뉴스 기사를 배치로 필터링 (75점 이상만)"""
     filtered = []
     
+    # 필터링 통계
+    filter_stats = {
+        'headline': 0,
+        'celebrity_scandal': 0,
+        'low_score': 0,
+        'not_relevant': 0
+    }
+    
     for item in news_items:
         result = filter_real_estate_news(item['title'], item['description'])
         item.update(result)
@@ -207,6 +364,31 @@ def filter_news_batch(news_items: list) -> list:
         # 부동산 관련 + 75점 이상만 통과
         if result['is_relevant'] and result.get('relevance_score', 0) >= 75:
             filtered.append(item)
+        else:
+            # 제외 이유 카운트
+            reason = result.get('reason', '').lower()
+            if '헤드라인' in reason or '종합' in reason:
+                filter_stats['headline'] += 1
+            elif '연예인' in reason and '분쟁' in reason:
+                filter_stats['celebrity_scandal'] += 1
+            elif result.get('relevance_score', 0) < 75:
+                filter_stats['low_score'] += 1
+            else:
+                filter_stats['not_relevant'] += 1
+    
+    # 통계 로깅
+    total_filtered = sum(filter_stats.values())
+    if total_filtered > 0:
+        logger.info("")
+        logger.info("📊 필터링 제외 통계:")
+        if filter_stats['headline'] > 0:
+            logger.info(f"   - 헤드라인 뉴스: {filter_stats['headline']}개")
+        if filter_stats['celebrity_scandal'] > 0:
+            logger.info(f"   - 연예인 분쟁: {filter_stats['celebrity_scandal']}개")
+        if filter_stats['low_score'] > 0:
+            logger.info(f"   - 낮은 점수 (75점 미만): {filter_stats['low_score']}개")
+        if filter_stats['not_relevant'] > 0:
+            logger.info(f"   - 부동산 무관: {filter_stats['not_relevant']}개")
     
     return filtered
 
