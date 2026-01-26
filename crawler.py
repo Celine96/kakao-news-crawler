@@ -19,7 +19,8 @@ from common import (
     save_all_news_background,
     init_google_sheets,
     init_csv_file,
-    get_recent_urls_from_gsheet
+    get_recent_urls_from_gsheet,
+    get_recent_titles_from_gsheet
 )
 
 # ================================================================================
@@ -289,22 +290,37 @@ async def auto_crawl():
         else:
             logger.info(f"   ✅ 중복 없음: {len(news_items)}개 유지")
         
-        # 5. DB 중복 체크 (최근 3시간 URL 확인)
+        # 5. DB 중복 체크 (최근 3시간 URL + 최근 24시간 제목 확인)
         logger.info("")
-        logger.info("🔍 DB 중복 확인 중 (최근 3시간)...")
+        logger.info("🔍 DB 중복 확인 중 (URL + 제목)...")
+        
+        # URL 중복 체크 (최근 3시간)
         recent_urls = get_recent_urls_from_gsheet(hours=3)
+        # 제목 중복 체크 (최근 24시간)
+        recent_titles = get_recent_titles_from_gsheet(hours=24)
         
         before_db_check = len(news_items)
         new_news_items = []
         duplicate_count = 0
         
         for item in news_items:
+            # URL 체크
             url = item.get('link') or item.get('url', '')
             if url and url in recent_urls:
                 duplicate_count += 1
-                logger.info(f"   ⚠️ DB 중복: '{item['title'][:40]}...' (이미 저장됨)")
-            else:
-                new_news_items.append(item)
+                logger.info(f"   ⚠️ URL 중복: '{item['title'][:40]}...' (이미 저장된 URL)")
+                continue
+            
+            # 제목 체크 (정규화)
+            title = item.get('title', '')
+            normalized_title = title.lower().strip().replace(' ', '')
+            if normalized_title and normalized_title in recent_titles:
+                duplicate_count += 1
+                logger.info(f"   ⚠️ 제목 중복: '{item['title'][:40]}...' (이미 저장된 제목)")
+                continue
+            
+            # 중복이 아니면 추가
+            new_news_items.append(item)
         
         news_items = new_news_items
         
