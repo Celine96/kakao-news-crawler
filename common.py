@@ -608,15 +608,16 @@ def get_recent_urls_from_gsheet(hours: int = 3) -> set:
         return set()
     
     try:
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
         
-        # 현재 시간 - N시간
-        cutoff_time = datetime.now() - timedelta(hours=hours)
+        # 현재 UTC 시간
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
         
         # 전체 레코드 가져오기
         all_records = gsheet_worksheet.get_all_records()
         
         recent_urls = set()
+        checked_count = 0
         
         for record in all_records:
             try:
@@ -625,23 +626,103 @@ def get_recent_urls_from_gsheet(hours: int = 3) -> set:
                 if not timestamp_str:
                     continue
                 
-                # ISO format 파싱
-                record_time = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                # ISO format 파싱 (timezone-aware로 변환)
+                # 'Z'가 있으면 UTC, 없으면 UTC로 간주
+                if timestamp_str.endswith('Z'):
+                    record_time = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                elif '+' in timestamp_str or timestamp_str.count('-') > 2:
+                    # 이미 timezone 정보가 있음
+                    record_time = datetime.fromisoformat(timestamp_str)
+                else:
+                    # timezone 정보가 없으면 UTC로 간주
+                    record_time = datetime.fromisoformat(timestamp_str).replace(tzinfo=timezone.utc)
+                
+                checked_count += 1
                 
                 # 최근 N시간 이내면 URL 추가
                 if record_time >= cutoff_time:
                     url = record.get('url', '')
                     if url:
                         recent_urls.add(url)
+                        
             except Exception as e:
-                # 개별 레코드 파싱 실패는 무시
+                # 개별 레코드 파싱 실패는 로그만 남기고 계속
+                logger.debug(f"레코드 파싱 실패: {e}")
                 continue
         
-        logger.info(f"📋 최근 {hours}시간 URL 확인: {len(recent_urls)}개")
+        logger.info(f"📋 최근 {hours}시간 URL 확인: 전체 {checked_count}개 레코드 중 {len(recent_urls)}개 URL")
         return recent_urls
         
     except Exception as e:
         logger.error(f"❌ 최근 URL 조회 실패: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return set()
+
+def get_recent_titles_from_gsheet(hours: int = 24) -> set:
+    """
+    구글 시트에서 최근 N시간 내 저장된 제목 목록 가져오기
+    
+    Args:
+        hours: 몇 시간 이내 데이터를 확인할지 (기본 24시간)
+    
+    Returns:
+        최근 N시간 내 제목 집합 (소문자 변환 및 공백 제거)
+    """
+    global gsheet_worksheet
+    
+    if not gsheet_worksheet:
+        logger.warning("⚠️ Google Sheets not initialized - 제목 중복 체크 불가")
+        return set()
+    
+    try:
+        from datetime import datetime, timedelta, timezone
+        
+        # 현재 UTC 시간
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+        
+        # 전체 레코드 가져오기
+        all_records = gsheet_worksheet.get_all_records()
+        
+        recent_titles = set()
+        checked_count = 0
+        
+        for record in all_records:
+            try:
+                # timestamp 파싱
+                timestamp_str = record.get('timestamp', '')
+                if not timestamp_str:
+                    continue
+                
+                # ISO format 파싱 (timezone-aware로 변환)
+                if timestamp_str.endswith('Z'):
+                    record_time = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                elif '+' in timestamp_str or timestamp_str.count('-') > 2:
+                    record_time = datetime.fromisoformat(timestamp_str)
+                else:
+                    record_time = datetime.fromisoformat(timestamp_str).replace(tzinfo=timezone.utc)
+                
+                checked_count += 1
+                
+                # 최근 N시간 이내면 제목 추가
+                if record_time >= cutoff_time:
+                    title = record.get('title', '')
+                    if title:
+                        # 제목을 정규화 (소문자, 공백 제거, 특수문자 제거)
+                        normalized_title = title.lower().strip().replace(' ', '')
+                        recent_titles.add(normalized_title)
+                        
+            except Exception as e:
+                logger.debug(f"레코드 파싱 실패: {e}")
+                continue
+        
+        logger.info(f"📋 최근 {hours}시간 제목 확인: 전체 {checked_count}개 레코드 중 {len(recent_titles)}개 제목")
+        return recent_titles
+        
+    except Exception as e:
+        logger.error(f"❌ 최근 제목 조회 실패: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return set()
 
 def init_csv_file():
